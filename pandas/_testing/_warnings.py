@@ -159,20 +159,16 @@ def _assert_caught_no_extra_warnings(
     expected_warning: type[Warning] | bool | tuple[type[Warning], ...] | None,
 ) -> None:
     """Assert that no extra warnings apart from the expected ones are caught."""
-    extra_warnings = []
-
-    for actual_warning in caught_warnings:
-        if _is_unexpected_warning(actual_warning, expected_warning):
-            extra_warnings.append(
-                (
-                    actual_warning.category.__name__,
-                    actual_warning.message,
-                    actual_warning.filename,
-                    actual_warning.lineno,
-                )
-            )
-
-    if extra_warnings:
+    if extra_warnings := [
+        (
+            actual_warning.category.__name__,
+            actual_warning.message,
+            actual_warning.filename,
+            actual_warning.lineno,
+        )
+        for actual_warning in caught_warnings
+        if _is_unexpected_warning(actual_warning, expected_warning)
+    ]:
         raise AssertionError(f"Caused unexpected warning(s): {repr(extra_warnings)}")
 
 
@@ -184,7 +180,7 @@ def _is_unexpected_warning(
     if actual_warning and not expected_warning:
         return True
     expected_warning = cast(Type[Warning], expected_warning)
-    return bool(not issubclass(actual_warning.category, expected_warning))
+    return not issubclass(actual_warning.category, expected_warning)
 
 
 def _assert_raised_with_correct_stacklevel(

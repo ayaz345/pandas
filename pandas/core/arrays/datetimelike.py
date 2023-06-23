@@ -446,14 +446,12 @@ class DatetimeLikeArrayMixin(OpsMixin, NDArrayBackedExtensionArray):
                 # *much* faster than self._box_values
                 #  for e.g. test_get_loc_tuple_monotonic_above_size_cutoff
                 i8data = self.asi8
-                converted = ints_to_pydatetime(
+                return ints_to_pydatetime(
                     i8data,
                     tz=self.tz,
                     box="timestamp",
                     reso=self._creso,
                 )
-                return converted
-
             elif self.dtype.kind == "m":
                 return ints_to_pytimedelta(self._ndarray, box=True)
 
@@ -577,10 +575,7 @@ class DatetimeLikeArrayMixin(OpsMixin, NDArrayBackedExtensionArray):
                 other = self._validate_listlike(other, allow_object=True)
                 self._check_compatible_with(other)
             except (TypeError, IncompatibleFrequency) as err:
-                if is_object_dtype(getattr(other, "dtype", None)):
-                    # We will have to operate element-wise
-                    pass
-                else:
+                if not is_object_dtype(getattr(other, "dtype", None)):
                     raise InvalidComparison(other) from err
 
         return other
@@ -637,12 +632,7 @@ class DatetimeLikeArrayMixin(OpsMixin, NDArrayBackedExtensionArray):
             msg = self._validation_error_message(value, allow_listlike)
             raise TypeError(msg)
 
-        if not unbox:
-            # NB: In general NDArrayBackedExtensionArray will unbox here;
-            #  this option exists to prevent a performance hit in
-            #  TimedeltaIndex.get_loc
-            return value
-        return self._unbox_scalar(value)
+        return value if not unbox else self._unbox_scalar(value)
 
     def _validation_error_message(self, value, allow_listlike: bool = False) -> str:
         """
@@ -659,17 +649,11 @@ class DatetimeLikeArrayMixin(OpsMixin, NDArrayBackedExtensionArray):
         -------
         str
         """
-        if allow_listlike:
-            msg = (
-                f"value should be a '{self._scalar_type.__name__}', 'NaT', "
-                f"or array of those. Got '{type(value).__name__}' instead."
-            )
-        else:
-            msg = (
-                f"value should be a '{self._scalar_type.__name__}' or 'NaT'. "
-                f"Got '{type(value).__name__}' instead."
-            )
-        return msg
+        return (
+            f"value should be a '{self._scalar_type.__name__}', 'NaT', or array of those. Got '{type(value).__name__}' instead."
+            if allow_listlike
+            else f"value should be a '{self._scalar_type.__name__}' or 'NaT'. Got '{type(value).__name__}' instead."
+        )
 
     def _validate_listlike(self, value, allow_object: bool = False):
         if isinstance(value, type(self)):
@@ -780,16 +764,16 @@ class DatetimeLikeArrayMixin(OpsMixin, NDArrayBackedExtensionArray):
             return np.zeros(self.shape, dtype=bool)
 
         if not isinstance(values, type(self)):
-            inferable = [
-                "timedelta",
-                "timedelta64",
-                "datetime",
-                "datetime64",
-                "date",
-                "period",
-            ]
             if values.dtype == object:
                 inferred = lib.infer_dtype(values, skipna=False)
+                inferable = [
+                    "timedelta",
+                    "timedelta64",
+                    "datetime",
+                    "datetime64",
+                    "date",
+                    "period",
+                ]
                 if inferred not in inferable:
                     if inferred == "string":
                         pass
@@ -871,9 +855,7 @@ class DatetimeLikeArrayMixin(OpsMixin, NDArrayBackedExtensionArray):
         """
         Return the frequency object as a string if its set, otherwise None.
         """
-        if self.freq is None:
-            return None
-        return self.freq.freqstr
+        return None if self.freq is None else self.freq.freqstr
 
     @property  # NB: override with cache_readonly in immutable subclasses
     def inferred_freq(self) -> str | None:
@@ -1221,12 +1203,11 @@ class DatetimeLikeArrayMixin(OpsMixin, NDArrayBackedExtensionArray):
         # For period dtype, timedelta64 is a close-enough return dtype.
         result = np.empty(self.shape, dtype=np.int64)
         result.fill(iNaT)
-        if self.dtype.kind in ["m", "M"]:
-            # We can retain unit in dtype
-            self = cast("DatetimeArray| TimedeltaArray", self)
-            return result.view(f"timedelta64[{self.unit}]")
-        else:
+        if self.dtype.kind not in ["m", "M"]:
             return result.view("timedelta64[ns]")
+        # We can retain unit in dtype
+        self = cast("DatetimeArray| TimedeltaArray", self)
+        return result.view(f"timedelta64[{self.unit}]")
 
     @final
     def _sub_periodlike(self, other: Period | PeriodArray) -> npt.NDArray[np.object_]:
@@ -1246,12 +1227,7 @@ class DatetimeLikeArrayMixin(OpsMixin, NDArrayBackedExtensionArray):
         )
         new_data = np.array([self.freq.base * x for x in new_i8_data])
 
-        if o_mask is None:
-            # i.e. Period scalar
-            mask = self._isnan
-        else:
-            # i.e. PeriodArray
-            mask = self._isnan | o_mask
+        mask = self._isnan if o_mask is None else self._isnan | o_mask
         new_data[mask] = NaT
         return new_data
 
@@ -1288,8 +1264,7 @@ class DatetimeLikeArrayMixin(OpsMixin, NDArrayBackedExtensionArray):
         # Caller is responsible for broadcasting if necessary
         assert self.shape == other.shape, (self.shape, other.shape)
 
-        res_values = op(self.astype("O"), np.asarray(other))
-        return res_values
+        return op(self.astype("O"), np.asarray(other))
 
     def _accumulate(self, name: str, *, skipna: bool = True, **kwargs):
         if name not in {"cummin", "cummax"}:
@@ -1562,10 +1537,7 @@ class DatetimeLikeArrayMixin(OpsMixin, NDArrayBackedExtensionArray):
         return self._wrap_reduction_result(axis, result)
 
     def _mode(self, dropna: bool = True):
-        mask = None
-        if dropna:
-            mask = self.isna()
-
+        mask = self.isna() if dropna else None
         i8modes = algorithms.mode(self.view("i8"), mask=mask)
         npmodes = i8modes.view(self._ndarray.dtype)
         npmodes = cast(np.ndarray, npmodes)
@@ -2062,11 +2034,7 @@ class TimelikeOps(DatetimeLikeArrayMixin):
         if freq is None:
             # Always valid
             pass
-        elif len(self) == 0 and isinstance(freq, BaseOffset):
-            # Always valid.  In the TimedeltaArray case, we assume this
-            #  is a Tick offset.
-            pass
-        else:
+        elif len(self) != 0 or not isinstance(freq, BaseOffset):
             # As an internal method, we can ensure this assertion always holds
             assert freq == "infer"
             freq = to_offset(self.inferred_freq)

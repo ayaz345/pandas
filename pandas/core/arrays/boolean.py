@@ -111,12 +111,7 @@ class BooleanDtype(BaseMaskedDtype):
         if array.type != pyarrow.bool_():
             raise TypeError(f"Expected array of boolean type, got {array.type} instead")
 
-        if isinstance(array, pyarrow.Array):
-            chunks = [array]
-        else:
-            # pyarrow.ChunkedArray
-            chunks = array.chunks
-
+        chunks = [array] if isinstance(array, pyarrow.Array) else array.chunks
         results = []
         for arr in chunks:
             buflist = arr.buffers()
@@ -211,17 +206,16 @@ def coerce_to_array(
         mask = np.zeros(values.shape, dtype=bool)
     elif mask is None:
         mask = mask_values
-    else:
-        if isinstance(mask, np.ndarray) and mask.dtype == np.bool_:
-            if mask_values is not None:
-                mask = mask | mask_values
-            else:
-                if copy:
-                    mask = mask.copy()
+    elif isinstance(mask, np.ndarray) and mask.dtype == np.bool_:
+        if mask_values is None:
+            if copy:
+                mask = mask.copy()
         else:
-            mask = np.array(mask, dtype=bool)
-            if mask_values is not None:
-                mask = mask | mask_values
+            mask = mask | mask_values
+    else:
+        mask = np.array(mask, dtype=bool)
+        if mask_values is not None:
+            mask = mask | mask_values
 
     if values.shape != mask.shape:
         raise ValueError("values.shape and mask.shape must match")
@@ -382,7 +376,7 @@ class BooleanArray(BaseMaskedArray):
     ) -> BaseMaskedArray:
         data = self._data
         mask = self._mask
-        if name in ("cummin", "cummax"):
+        if name in {"cummin", "cummax"}:
             op = getattr(masked_accumulations, name)
             data, mask = op(data, mask, skipna=skipna, **kwargs)
             return type(self)(data, mask, copy=False)

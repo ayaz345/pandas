@@ -276,8 +276,7 @@ class Apply(metaclass=abc.ABCMeta):
             return self._try_aggregate_string_function(obj, func, *args, **kwargs)
 
         if not args and not kwargs:
-            f = com.get_cython_func(func)
-            if f:
+            if f := com.get_cython_func(func):
                 return getattr(obj, f)()
 
         # Two possible ways to use a UDF - apply or call directly
@@ -516,7 +515,7 @@ class Apply(metaclass=abc.ABCMeta):
         that a nested renamer is not passed. Also normalizes to all lists
         when values consists of a mix of list and non-lists.
         """
-        assert how in ("apply", "agg", "transform")
+        assert how in {"apply", "agg", "transform"}
 
         # Can't use func.values(); wouldn't work for a Series
         if (
@@ -541,12 +540,10 @@ class Apply(metaclass=abc.ABCMeta):
         # be list-likes
         # Cannot use func.values() because arg may be a Series
         if any(isinstance(x, aggregator_types) for _, x in func.items()):
-            new_func: AggFuncTypeDict = {}
-            for k, v in func.items():
-                if not isinstance(v, aggregator_types):
-                    new_func[k] = [v]
-                else:
-                    new_func[k] = v
+            new_func: AggFuncTypeDict = {
+                k: [v] if not isinstance(v, aggregator_types) else v
+                for k, v in func.items()
+            }
             func = new_func
         return func
 
@@ -566,8 +563,8 @@ class Apply(metaclass=abc.ABCMeta):
 
             # people may try to aggregate on a non-callable attribute
             # but don't let them think they can pass args to it
-            assert len(args) == 0
-            assert len([kwarg for kwarg in kwargs if kwarg not in ["axis"]]) == 0
+            assert not args
+            assert not [kwarg for kwarg in kwargs if kwarg not in ["axis"]]
             return f
 
         f = getattr(np, arg, None)
@@ -731,11 +728,7 @@ class FrameApply(NDFrameApply):
                 should_reduce = not isinstance(r, Series)
 
         if should_reduce:
-            if len(self.agg_axis):
-                r = self.f(Series([], dtype=np.float64))
-            else:
-                r = np.nan
-
+            r = self.f(Series([], dtype=np.float64)) if len(self.agg_axis) else np.nan
             return self.obj._constructor_sliced(r, index=self.agg_axis)
         else:
             return self.obj.copy()
@@ -788,11 +781,9 @@ class FrameApply(NDFrameApply):
 
             result_values[:, i] = res
 
-        # we *always* preserve the original index / columns
-        result = self.obj._constructor(
+        return self.obj._constructor(
             result_values, index=target.index, columns=target.columns
         )
-        return result
 
     def apply_standard(self):
         results, res_index = self.apply_series_generator()
@@ -956,17 +947,12 @@ class FrameColumnApply(FrameApply):
         result: DataFrame | Series
 
         # we have requested to expand
-        if self.result_type == "expand":
+        if self.result_type == "expand" or isinstance(results[0], ABCSeries):
             result = self.infer_to_same_shape(results, res_index)
 
-        # we have a non-series and don't want inference
-        elif not isinstance(results[0], ABCSeries):
+        else:
             result = self.obj._constructor_sliced(results)
             result.index = res_index
-
-        # we may want to infer results
-        else:
-            result = self.infer_to_same_shape(results, res_index)
 
         return result
 
@@ -978,10 +964,7 @@ class FrameColumnApply(FrameApply):
         # set the index
         result.index = res_index
 
-        # infer dtypes
-        result = result.infer_objects(copy=False)
-
-        return result
+        return result.infer_objects(copy=False)
 
 
 class SeriesApply(NDFrameApply):
@@ -1017,12 +1000,7 @@ class SeriesApply(NDFrameApply):
         if is_list_like(self.f):
             return self.apply_multiple()
 
-        if isinstance(self.f, str):
-            # if we are a string, try to dispatch
-            return self.apply_str()
-
-        # self.f is Callable
-        return self.apply_standard()
+        return self.apply_str() if isinstance(self.f, str) else self.apply_standard()
 
     def agg(self):
         result = super().agg()

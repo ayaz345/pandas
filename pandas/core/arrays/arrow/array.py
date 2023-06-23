@@ -378,12 +378,8 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
         value = self._data[item]
         if isinstance(value, pa.ChunkedArray):
             return type(self)(value)
-        else:
-            scalar = value.as_py()
-            if scalar is None:
-                return self._dtype.na_value
-            else:
-                return scalar
+        scalar = value.as_py()
+        return self._dtype.na_value if scalar is None else scalar
 
     def __iter__(self) -> Iterator[Any]:
         """
@@ -468,11 +464,7 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
             length = self._data.length()
 
             seps: list[str] | list[bytes]
-            if pa.types.is_string(pa_type):
-                seps = [""] * length
-            else:
-                seps = [b""] * length
-
+            seps = [""] * length if pa.types.is_string(pa_type) else [b""] * length
             if is_scalar(other):
                 other = [other] * length
             elif isinstance(other, type(self)):
@@ -658,10 +650,7 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
                 return value
             if isinstance(value, (pa.Scalar, pa.Array, pa.ChunkedArray)):
                 return value
-            if is_array_like(value):
-                pa_box = pa.array
-            else:
-                pa_box = pa.scalar
+            pa_box = pa.array if is_array_like(value) else pa.scalar
             try:
                 value = pa_box(value, type=pa_type, from_pandas=True)
             except pa.ArrowTypeError as err:
@@ -854,13 +843,7 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
         that causes realignment, with a `fill_value`.
         """
         # TODO: Remove once we got rid of the (indices < 0) check
-        if not is_array_like(indices):
-            indices_array = np.asanyarray(indices)
-        else:
-            # error: Incompatible types in assignment (expression has type
-            # "Sequence[int]", variable has type "ndarray")
-            indices_array = indices  # type: ignore[assignment]
-
+        indices_array = indices if is_array_like(indices) else np.asanyarray(indices)
         if len(self._data) == 0 and (indices_array >= 0).any():
             raise IndexError("cannot do a non-empty take")
         if indices_array.size > 0 and indices_array.max() >= len(self._data):
@@ -868,22 +851,20 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
 
         if allow_fill:
             fill_mask = indices_array < 0
-            if fill_mask.any():
-                validate_indices(indices_array, len(self._data))
-                # TODO(ARROW-9433): Treat negative indices as NULL
-                indices_array = pa.array(indices_array, mask=fill_mask)
-                result = self._data.take(indices_array)
-                if isna(fill_value):
-                    return type(self)(result)
-                # TODO: ArrowNotImplementedError: Function fill_null has no
-                # kernel matching input types (array[string], scalar[string])
-                result = type(self)(result)
-                result[fill_mask] = fill_value
-                return result
-                # return type(self)(pc.fill_null(result, pa.scalar(fill_value)))
-            else:
+            if not fill_mask.any():
                 # Nothing to fill
                 return type(self)(self._data.take(indices))
+            validate_indices(indices_array, len(self._data))
+            # TODO(ARROW-9433): Treat negative indices as NULL
+            indices_array = pa.array(indices_array, mask=fill_mask)
+            result = self._data.take(indices_array)
+            if isna(fill_value):
+                return type(self)(result)
+            # TODO: ArrowNotImplementedError: Function fill_null has no
+            # kernel matching input types (array[string], scalar[string])
+            result = type(self)(result)
+            result[fill_mask] = fill_value
+            return result
         else:  # allow_fill=False
             # TODO(ARROW-9432): Treat negative indices as indices from the right.
             if (indices_array < 0).any():
@@ -1094,7 +1075,7 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
 
         data_to_reduce = self._data
 
-        if name in ["any", "all"] and (
+        if name in {"any", "all"} and (
             pa.types.is_integer(pa_type)
             or pa.types.is_floating(pa_type)
             or pa.types.is_duration(pa_type)
@@ -1111,10 +1092,12 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
             not_eq = pc.not_equal(data_to_cmp, 0)
             data_to_reduce = not_eq
 
-        elif name in ["min", "max", "sum"] and pa.types.is_duration(pa_type):
+        elif name in {"min", "max", "sum"} and pa.types.is_duration(pa_type):
             data_to_reduce = self._data.cast(pa.int64())
 
-        elif name in ["median", "mean", "std", "sem"] and pa.types.is_temporal(pa_type):
+        elif name in {"median", "mean", "std", "sem"} and pa.types.is_temporal(
+            pa_type
+        ):
             nbits = pa_type.bit_width
             if nbits == 32:
                 data_to_reduce = self._data.cast(pa.int32())
@@ -1156,11 +1139,11 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
         if pc.is_null(result).as_py():
             return self.dtype.na_value
 
-        if name in ["min", "max", "sum"] and pa.types.is_duration(pa_type):
+        if name in {"min", "max", "sum"} and pa.types.is_duration(pa_type):
             result = result.cast(pa_type)
-        if name in ["median", "mean"] and pa.types.is_temporal(pa_type):
+        if name in {"median", "mean"} and pa.types.is_temporal(pa_type):
             result = result.cast(pa_type)
-        if name in ["std", "sem"] and pa.types.is_temporal(pa_type):
+        if name in {"std", "sem"} and pa.types.is_temporal(pa_type):
             result = result.cast(pa.int64())
             if pa.types.is_duration(pa_type):
                 result = result.cast(pa_type)
@@ -1276,10 +1259,7 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
                 pct=pct,
             )
             # keep dtypes consistent with the implementation below
-            if method == "average" or pct:
-                pa_type = pa.float64()
-            else:
-                pa_type = pa.uint64()
+            pa_type = pa.float64() if method == "average" or pct else pa.uint64()
             result = pa.array(ranked, type=pa_type, from_pandas=True)
             return type(self)(result)
 
@@ -1314,10 +1294,7 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
         if pct:
             if not pa.types.is_floating(result.type):
                 result = result.cast(pa.float64())
-            if method == "dense":
-                divisor = pc.max(result)
-            else:
-                divisor = pc.count(result)
+            divisor = pc.max(result) if method == "dense" else pc.count(result)
             result = pc.divide(result, divisor)
 
         return type(self)(result)
@@ -1344,19 +1321,12 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
             # https://github.com/apache/arrow/issues/33769 in these cases
             #  we can cast to ints and back
             nbits = pa_dtype.bit_width
-            if nbits == 32:
-                data = data.cast(pa.int32())
-            else:
-                data = data.cast(pa.int64())
-
+            data = data.cast(pa.int32()) if nbits == 32 else data.cast(pa.int64())
         result = pc.quantile(data, q=qs, interpolation=interpolation)
 
         if pa.types.is_temporal(pa_dtype):
             nbits = pa_dtype.bit_width
-            if nbits == 32:
-                result = result.cast(pa.int32())
-            else:
-                result = result.cast(pa.int64())
+            result = result.cast(pa.int32()) if nbits == 32 else result.cast(pa.int64())
             result = result.cast(pa_dtype)
 
         return type(self)(result)
@@ -1408,10 +1378,7 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
             return value
         if isinstance(value, (pa.Scalar, pa.Array, pa.ChunkedArray)):
             return value
-        if is_list_like(value):
-            pa_box = pa.array
-        else:
-            pa_box = pa.scalar
+        pa_box = pa.array if is_list_like(value) else pa.scalar
         try:
             value = pa_box(value, type=self._data.type, from_pandas=True)
         except pa.ArrowTypeError as err:
@@ -1541,10 +1508,7 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
         if flags:
             raise NotImplementedError(f"contains not implemented with {flags=}")
 
-        if regex:
-            pa_contains = pc.match_substring_regex
-        else:
-            pa_contains = pc.match_substring
+        pa_contains = pc.match_substring_regex if regex else pc.match_substring
         result = pa_contains(self._data, pat, ignore_case=not case)
         if not isna(na):
             result = result.fill_null(na)
@@ -1625,14 +1589,13 @@ class ArrowExtensionArray(OpsMixin, ExtensionArray, BaseStringArrayMethods):
         lengths = pc.utf8_length(self._data)
         if i >= 0:
             out_of_bounds = pc.greater_equal(i, lengths)
-            start = i
             stop = i + 1
             step = 1
         else:
             out_of_bounds = pc.greater(-i, lengths)
-            start = i
             stop = i - 1
             step = -1
+        start = i
         not_out_of_bounds = pc.invert(out_of_bounds.fill_null(True))
         selected = pc.utf8_slice_codeunits(
             self._data, start=start, stop=stop, step=step

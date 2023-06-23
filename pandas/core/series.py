@@ -377,7 +377,7 @@ class Series(base.IndexOpsMixin, NDFrame):  # type: ignore[misc]
             isinstance(data, (SingleBlockManager, SingleArrayManager))
             and index is None
             and dtype is None
-            and copy is False
+            and not copy
         ):
             # GH#33357 called with just the SingleBlockManager
             NDFrame.__init__(self, data)
@@ -424,12 +424,7 @@ class Series(base.IndexOpsMixin, NDFrame):  # type: ignore[misc]
                 "initializing a Series from a MultiIndex is not supported"
             )
         if isinstance(data, Index):
-            if dtype is not None:
-                # astype copies
-                data = data.astype(dtype)
-            else:
-                # GH#24096 we need to ensure the index remains immutable
-                data = data._values.copy()
+            data = data.astype(dtype) if dtype is not None else data._values.copy()
             copy = False
 
         elif isinstance(data, np.ndarray):
@@ -464,9 +459,7 @@ class Series(base.IndexOpsMixin, NDFrame):  # type: ignore[misc]
                     "`index` argument. `copy` must be False."
                 )
 
-        elif isinstance(data, ExtensionArray):
-            pass
-        else:
+        elif not isinstance(data, ExtensionArray):
             data = com.maybe_iterable_to_list(data)
             if is_list_like(data) and not len(data) and dtype is None:
                 # GH 29405: Pre-2.0, this defaulted to float.
@@ -944,11 +937,7 @@ class Series(base.IndexOpsMixin, NDFrame):  # type: ignore[misc]
         if is_hashable(key):
             # Otherwise index.get_value will raise InvalidIndexError
             try:
-                # For labels that don't resolve as scalars like tuples and frozensets
-                result = self._get_value(key)
-
-                return result
-
+                return self._get_value(key)
             except (KeyError, TypeError, InvalidIndexError):
                 # InvalidIndexError for e.g. generator
                 #  see test_series_getitem_corner_generator
@@ -1052,20 +1041,18 @@ class Series(base.IndexOpsMixin, NDFrame):  # type: ignore[misc]
         if is_integer(loc):
             return self._values[loc]
 
-        if isinstance(self.index, MultiIndex):
-            mi = self.index
-            new_values = self._values[loc]
-            if len(new_values) == 1 and mi.nlevels == 1:
-                # If more than one level left, we can not return a scalar
-                return new_values[0]
-
-            new_index = mi[loc]
-            new_index = maybe_droplevels(new_index, label)
-            new_ser = self._constructor(new_values, index=new_index, name=self.name)
-            return new_ser.__finalize__(self)
-
-        else:
+        if not isinstance(self.index, MultiIndex):
             return self.iloc[loc]
+        mi = self.index
+        new_values = self._values[loc]
+        if len(new_values) == 1 and mi.nlevels == 1:
+            # If more than one level left, we can not return a scalar
+            return new_values[0]
+
+        new_index = mi[loc]
+        new_index = maybe_droplevels(new_index, label)
+        new_ser = self._constructor(new_values, index=new_index, name=self.name)
+        return new_ser.__finalize__(self)
 
     def __setitem__(self, key, value) -> None:
         if not PYPY and using_copy_on_write():
@@ -1511,10 +1498,7 @@ class Series(base.IndexOpsMixin, NDFrame):  # type: ignore[misc]
             new_index = default_index(len(self))
             if level is not None:
                 level_list: Sequence[Hashable]
-                if not isinstance(level, (tuple, list)):
-                    level_list = [level]
-                else:
-                    level_list = level
+                level_list = [level] if not isinstance(level, (tuple, list)) else level
                 level_list = [self.index._get_level_number(lev) for lev in level_list]
                 if len(level_list) < self.index.nlevels:
                     new_index = self.index.droplevel(level_list)
@@ -1533,11 +1517,7 @@ class Series(base.IndexOpsMixin, NDFrame):  # type: ignore[misc]
             if name is lib.no_default:
                 # For backwards compatibility, keep columns as [0] instead of
                 #  [None] when self.name is None
-                if self.name is None:
-                    name = 0
-                else:
-                    name = self.name
-
+                name = 0 if self.name is None else self.name
             df = self.to_frame(name)
             return df.reset_index(
                 level=level, drop=drop, allow_duplicates=allow_duplicates
@@ -1657,12 +1637,11 @@ class Series(base.IndexOpsMixin, NDFrame):  # type: ignore[misc]
 
         if buf is None:
             return result
+        if hasattr(buf, "write"):
+            buf.write(result)
         else:
-            if hasattr(buf, "write"):
-                buf.write(result)
-            else:
-                with open(buf, "w") as f:
-                    f.write(result)
+            with open(buf, "w") as f:
+                f.write(result)
         return None
 
     @doc(
@@ -1852,11 +1831,7 @@ class Series(base.IndexOpsMixin, NDFrame):  # type: ignore[misc]
         columns: Index
         if name is lib.no_default:
             name = self.name
-            if name is None:
-                # default to [0], same as we would get with DataFrame(self)
-                columns = default_index(1)
-            else:
-                columns = Index([name])
+            columns = default_index(1) if name is None else Index([name])
         else:
             columns = Index([name])
 
@@ -2226,11 +2201,10 @@ Name: Max Speed, dtype: float64
         if ignore_index:
             result.index = default_index(len(result))
 
-        if inplace:
-            self._update_inplace(result)
-            return None
-        else:
+        if not inplace:
             return result
+        self._update_inplace(result)
+        return None
 
     def duplicated(self, keep: DropKeep = "first") -> Series:
         """
@@ -2378,9 +2352,7 @@ Name: Max Speed, dtype: float64
         # error: Argument 1 to "argmin" of "IndexOpsMixin" has incompatible type "Union
         # [int, Literal['index', 'columns']]"; expected "Optional[int]"
         i = self.argmin(axis, skipna, *args, **kwargs)  # type: ignore[arg-type]
-        if i == -1:
-            return np.nan
-        return self.index[i]
+        return np.nan if i == -1 else self.index[i]
 
     def idxmax(self, axis: Axis = 0, skipna: bool = True, *args, **kwargs) -> Hashable:
         """
@@ -2449,9 +2421,7 @@ Name: Max Speed, dtype: float64
         # error: Argument 1 to "argmax" of "IndexOpsMixin" has incompatible type
         # "Union[int, Literal['index', 'columns']]"; expected "Optional[int]"
         i = self.argmax(axis, skipna, *args, **kwargs)  # type: ignore[arg-type]
-        if i == -1:
-            return np.nan
-        return self.index[i]
+        return np.nan if i == -1 else self.index[i]
 
     def round(self, decimals: int = 0, *args, **kwargs) -> Series:
         """
@@ -2908,9 +2878,7 @@ Name: Max Speed, dtype: float64
             return self._constructor(
                 np.dot(lvals, rvals), index=other.columns
             ).__finalize__(self, method="dot")
-        elif isinstance(other, Series):
-            return np.dot(lvals, rvals)
-        elif isinstance(rvals, np.ndarray):
+        elif isinstance(other, Series) or isinstance(rvals, np.ndarray):
             return np.dot(lvals, rvals)
         else:  # pragma: no cover
             raise TypeError(f"unsupported type: {type(other)}")
@@ -3554,10 +3522,7 @@ Keep all original rows and also all original values
         sorted_index = nargsort(values_to_sort, kind, bool(ascending), na_position)
 
         if is_range_indexer(sorted_index, len(sorted_index)):
-            if inplace:
-                return self._update_inplace(self)
-            return self.copy(deep=None)
-
+            return self._update_inplace(self) if inplace else self.copy(deep=None)
         result = self._constructor(
             self._values[sorted_index], index=self.index[sorted_index]
         )
@@ -4375,11 +4340,10 @@ Keep all original rows and also all original values
 
         # if func is None, will switch to user-provided "named aggregation" kwargs
         if func is None:
-            func = dict(kwargs.items())
+            func = dict(kwargs)
 
         op = SeriesApply(self, func, convert_dtype=False, args=args, kwargs=kwargs)
-        result = op.agg()
-        return result
+        return op.agg()
 
     agg = aggregate
 
@@ -4430,10 +4394,9 @@ Keep all original rows and also all original values
     ) -> DataFrame | Series:
         # Validate axis argument
         self._get_axis_number(axis)
-        result = SeriesApply(
+        return SeriesApply(
             self, func=func, convert_dtype=True, args=args, kwargs=kwargs
         ).transform()
-        return result
 
     def apply(
         self,
@@ -4573,19 +4536,16 @@ Keep all original rows and also all original values
             # dispatch to ExtensionArray interface
             return delegate._reduce(name, skipna=skipna, **kwds)
 
-        else:
             # dispatch to numpy arrays
-            if numeric_only and not is_numeric_dtype(self.dtype):
-                kwd_name = "numeric_only"
-                if name in ["any", "all"]:
-                    kwd_name = "bool_only"
-                # GH#47500 - change to TypeError to match other methods
-                raise TypeError(
-                    f"Series.{name} does not allow {kwd_name}={numeric_only} "
-                    "with non-numeric dtypes."
-                )
-            with np.errstate(all="ignore"):
-                return op(delegate, skipna=skipna, **kwds)
+        if numeric_only and not is_numeric_dtype(self.dtype):
+            kwd_name = "bool_only" if name in {"any", "all"} else "numeric_only"
+            # GH#47500 - change to TypeError to match other methods
+            raise TypeError(
+                f"Series.{name} does not allow {kwd_name}={numeric_only} "
+                "with non-numeric dtypes."
+            )
+        with np.errstate(all="ignore"):
+            return op(delegate, skipna=skipna, **kwds)
 
     def _reindex_indexer(
         self,
@@ -4600,10 +4560,7 @@ Keep all original rows and also all original values
         ):
             if using_copy_on_write():
                 return self.copy(deep=copy)
-            if copy or copy is None:
-                return self.copy(deep=copy)
-            return self
-
+            return self.copy(deep=copy) if copy or copy is None else self
         new_values = algorithms.take_nd(
             self._values, indexer, allow_fill=True, fill_value=None
         )
@@ -5447,10 +5404,9 @@ Keep all original rows and also all original values
                 infer_objects,
                 dtype_backend,
             )
-            result = input_series.astype(inferred_dtype)
+            return input_series.astype(inferred_dtype)
         else:
-            result = input_series.copy(deep=None)
-        return result
+            return input_series.copy(deep=None)
 
     # error: Cannot determine type of 'isna'
     # error: Return type "Series" of "isna" incompatible with return type "ndarray
@@ -5584,18 +5540,11 @@ Keep all original rows and also all original values
         if self._can_hold_na:
             result = remove_na_arraylike(self)
         else:
-            if not inplace:
-                result = self.copy(deep=None)
-            else:
-                result = self
-
+            result = self.copy(deep=None) if not inplace else self
         if ignore_index:
             result.index = default_index(len(result))
 
-        if inplace:
-            return self._update_inplace(result)
-        else:
-            return result
+        return self._update_inplace(result) if inplace else result
 
     # ----------------------------------------------------------------------
     # Time series-oriented methods

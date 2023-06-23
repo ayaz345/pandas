@@ -319,11 +319,7 @@ def array(
     if isinstance(data, ExtensionArray) and (
         dtype is None or is_dtype_equal(dtype, data.dtype)
     ):
-        # e.g. TimedeltaArray[s], avoid casting to PandasArray
-        if copy:
-            return data.copy()
-        return data
-
+        return data.copy() if copy else data
     if is_extension_array_dtype(dtype):
         cls = cast(ExtensionDtype, dtype).construct_array_type()
         return cls._from_sequence(data, dtype=dtype, copy=copy)
@@ -440,13 +436,7 @@ def extract_array(
     """
     if isinstance(obj, (ABCIndex, ABCSeries)):
         if isinstance(obj, ABCRangeIndex):
-            if extract_range:
-                return obj._values
-            # https://github.com/python/mypy/issues/1081
-            # error: Incompatible return value type (got "RangeIndex", expected
-            # "Union[T, Union[ExtensionArray, ndarray[Any, Any]]]")
-            return obj  # type: ignore[return-value]
-
+            return obj._values if extract_range else obj
         return obj._values
 
     elif extract_numpy and isinstance(obj, ABCPandasArray):
@@ -558,7 +548,6 @@ def sanitize_array(
         cls = dtype.construct_array_type()
         subarr = cls._from_sequence(data, dtype=dtype, copy=copy)
 
-    # GH#846
     elif isinstance(data, np.ndarray):
         if isinstance(data, np.matrix):
             data = data.A
@@ -591,7 +580,7 @@ def sanitize_array(
         # materialize e.g. generators, convert e.g. tuples, abc.ValueView
         data = list(data)
 
-        if len(data) == 0 and dtype is None:
+        if not data and dtype is None:
             # We default to float64, matching numpy
             subarr = np.array([], dtype=np.float64)
 
@@ -735,8 +724,7 @@ def _try_cast(
 
     if is_object_dtype(dtype):
         if not is_ndarray:
-            subarr = construct_1d_object_array_from_listlike(arr)
-            return subarr
+            return construct_1d_object_array_from_listlike(arr)
         return ensure_wrapped_if_datetimelike(arr).astype(dtype, copy=copy)
 
     elif dtype.kind == "U":
@@ -755,8 +743,6 @@ def _try_cast(
     elif dtype.kind in ["m", "M"]:
         return maybe_cast_to_datetime(arr, dtype)
 
-    # GH#15832: Check if we are requesting a numeric dtype and
-    # that we can convert the data to the requested dtype.
     elif is_integer_dtype(dtype):
         # this will raise if we have e.g. floats
 

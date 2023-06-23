@@ -133,8 +133,7 @@ class PandasObject(DirNamesMixin):
         Generates the total memory usage for an object that returns
         either a value or Series of values
         """
-        memory_usage = getattr(self, "memory_usage", None)
-        if memory_usage:
+        if memory_usage := getattr(self, "memory_usage", None):
             mem = memory_usage(deep=True)  # pylint: disable=not-callable
             return int(mem if is_scalar(mem) else mem.sum())
 
@@ -576,8 +575,8 @@ class IndexOpsMixin(OpsMixin):
                 f"to_numpy() got an unexpected keyword argument '{bad_keys}'"
             )
 
+        values = self._values
         if na_value is not lib.no_default:
-            values = self._values
             if not can_hold_element(values, na_value):
                 # if we can't hold the na_value asarray either makes a copy or we
                 # error before modifying values. The asarray later on thus won't make
@@ -587,9 +586,6 @@ class IndexOpsMixin(OpsMixin):
                 values = values.copy()
 
             values[np.asanyarray(self.isna())] = na_value
-        else:
-            values = self._values
-
         result = np.asarray(values, dtype=dtype)
 
         if copy and na_value is lib.no_default:
@@ -707,10 +703,7 @@ class IndexOpsMixin(OpsMixin):
         skipna = nv.validate_argmax_with_skipna(skipna, args, kwargs)
 
         if isinstance(delegate, ExtensionArray):
-            if not skipna and delegate.isna().any():
-                return -1
-            else:
-                return delegate.argmax()
+            return -1 if not skipna and delegate.isna().any() else delegate.argmax()
         else:
             # error: Incompatible return value type (got "Union[int, ndarray]", expected
             # "int")
@@ -771,10 +764,7 @@ class IndexOpsMixin(OpsMixin):
         skipna = nv.validate_argmin_with_skipna(skipna, args, kwargs)
 
         if isinstance(delegate, ExtensionArray):
-            if not skipna and delegate.isna().any():
-                return -1
-            else:
-                return delegate.argmin()
+            return -1 if not skipna and delegate.isna().any() else delegate.argmin()
         else:
             # error: Incompatible return value type (got "Union[int, ndarray]", expected
             # "int")
@@ -933,10 +923,7 @@ class IndexOpsMixin(OpsMixin):
             values = self._values
 
             indexer = mapper.index.get_indexer(values)
-            new_values = algorithms.take_nd(mapper._values, indexer)
-
-            return new_values
-
+            return algorithms.take_nd(mapper._values, indexer)
         # we must convert to python types
         if is_extension_array_dtype(self.dtype) and hasattr(self._values, "map"):
             # GH#23179 some EAs do not have `map`
@@ -959,10 +946,7 @@ class IndexOpsMixin(OpsMixin):
                 )
                 raise ValueError(msg)
 
-        # mapper is a function
-        new_values = map_f(values, mapper)
-
-        return new_values
+        return map_f(values, mapper)
 
     @final
     def value_counts(
@@ -1062,12 +1046,11 @@ class IndexOpsMixin(OpsMixin):
 
     def unique(self):
         values = self._values
-        if not isinstance(values, np.ndarray):
-            # i.e. ExtensionArray
-            result = values.unique()
-        else:
-            result = algorithms.unique1d(values)
-        return result
+        return (
+            values.unique()
+            if not isinstance(values, np.ndarray)
+            else algorithms.unique1d(values)
+        )
 
     @final
     def nunique(self, dropna: bool = True) -> int:
